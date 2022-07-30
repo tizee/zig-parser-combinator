@@ -1,5 +1,10 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
+const ArrayList = std.ArrayList;
+
 const testing = std.testing;
+const debug = std.debug;
 
 pub fn isAlpha(ch: u8) bool {
     return switch (ch) {
@@ -16,35 +21,68 @@ pub fn isDigit(ch: u8) bool {
     };
 }
 
-pub const ParseError = error{InvalidArg};
-pub const ParseResult = struct {
-    // success or failure
-    state: bool,
-    // overflow
-    overflow: bool,
-    // next index
-    index: u32,
-    // captured char values
-    value: std.ArrayList(u8),
-    // failure info
-    desc: []const u8,
-    pub fn success(byte: u8, index: u32) ParseResult {
-        return ParseResult{ .state = true, .index = index, .value = byte, .desc = "", .overflow = false };
-    }
+pub fn isDot(byte: u8) bool {
+    return byte == '.';
+}
 
-    pub fn fail(desc: []const u8, index: u32, overflow: bool) ParseResult {
-        return ParseResult{ .state = false, .index = index, .value = 0, .desc = desc, .overflow = overflow };
-    }
+pub fn isGreater(byte: u8) bool {
+    return byte == '>';
+}
+
+pub fn isAsterisk(byte: u8) bool {
+    return byte == '*';
+}
+
+pub fn isSharp(byte: u8) bool {
+    return byte == '#';
+}
+
+const ResultKind = enum { Success, Failure };
+
+pub const ParseError = error{InvalidArg};
+
+pub const ParseResult = struct {
+    state: bool,
+    // current matched values [start, end)
+    value: ?[2]u32,
+    // info
+    desc: ?[]const u8,
+    // index failed to parse
+    index: ?u32,
+    // remaining char values
+    next_index: u32,
 };
 
+pub fn success(value: ?[2]u32, next: u32) ParseResult {
+    return ParseResult{ .state = true, .value = value, .next_index = next, .desc = null, .index = null };
+}
+
+pub fn fail(desc: []const u8, index: u32, next_index: u32) ParseResult {
+    return ParseResult{
+        .state = false,
+        .desc = desc,
+        .index = index,
+        .next_index = next_index,
+        .value = null,
+    };
+}
+
+const BUF_CAP: u32 = 8 * (1 << 10);
+
 // helper for generate one-char parser
-pub fn GenerateCharParser(comptime desc: []const u8, comptime parseFn: fn (byte: u8) bool) type {
+pub fn GenerateCharParser(
+    comptime desc: []const u8,
+    comptime parseFn: fn (byte: u8) bool,
+) type {
     return struct {
         pub fn parse(bytes: []const u8, index: u32) ParseResult {
-            if (index < bytes.len and parseFn(bytes[index])) {
-                return ParseResult.success(bytes[index], index + 1);
+            if (bytes.len == 0) {
+                return fail("empty string", index, index);
             }
-            return ParseResult.fail(desc, index, index >= bytes.len);
+            if (index < bytes.len and parseFn(bytes[index])) {
+                return success([2]u32{ index, index + 1 }, index + 1);
+            }
+            return fail(desc, index, index);
         }
     };
 }
@@ -55,10 +93,12 @@ pub fn Optional(comptime parser: type) type {
     return struct {
         pub fn parse(bytes: []const u8, index: u32) ParseResult {
             const res = parser.parse(bytes, index);
-            if (!res.state) {
-                return ParseResult.success(0, res.index);
+            if (res.state) {
+                if (res.value) |value| {
+                    return success([2]u32{ index, value[1] }, res.next_index);
+                }
             }
-            return ParseResult.success(res.value, res.index);
+            return success([2]u32{ index, index }, index);
         }
     };
 }
@@ -74,17 +114,30 @@ pub fn AndThen(comptime p1: type, comptime p2: type) type {
         pub fn parse(bytes: []const u8, index: u32) ParseResult {
             const res1 = p1.parse(bytes, index);
             if (res1.state) {
-                const res2 = p2.parse(bytes, res1.index);
-                return res2;
+                const res2 = p2.parse(bytes, res1.next_index);
+                if (res2.state) {
+                    if (res2.value) |value| {
+                        // return ((r1,r2), i2)
+                        return success([2]u32{ index, value[1] }, res2.next_index);
+                    } else {
+                        // ((r1,None),i2)
+                        if (res1.value) |value| {
+                            return success([2]u32{ index, value[1] }, res2.next_index);
+                        } else {
+                            // ((None,None),i2)
+                            return success(null, res2.next_index);
+                        }
+                    }
+                }
             }
-            return res1;
+            return fail("andThen", index, index);
         }
     };
 }
 
 /// const p1 = digit;
 /// const p2 = letter;
-/// const p = andThen(p1,p2);
+/// const p = OrElse(p1,p2);
 /// p.parse("a") -> p2.parse("a")
 pub fn OrElse(comptime p1: type, comptime p2: type) type {
     return struct {
@@ -105,9 +158,15 @@ pub fn Many(comptime p: type) type {
         pub fn parse(bytes: []const u8, index: u32) ParseResult {
             var res = p.parse(bytes, index);
             while (res.state) {
-                res = p.parse(bytes, res.index);
+                const next = p.parse(bytes, res.next_index);
+                if (!next.state) {
+                    if (res.value) |value| {
+                        return success([2]u32{ index, value[1] }, res.next_index);
+                    }
+                }
+                res = next;
             }
-            return ParseResult.success(res.value, res.index);
+            return success([2]u32{ index, index }, index);
         }
     };
 }
@@ -118,6 +177,7 @@ pub fn ManyOne(comptime p: type) type {
     return AndThen(p, Many(p));
 }
 
+// [min,max]
 pub fn Times(comptime p: type, min: u32, max: u32) ParseError!type {
     if (min > max) {
         return ParseError.InvalidArg;
@@ -127,18 +187,19 @@ pub fn Times(comptime p: type, min: u32, max: u32) ParseError!type {
             var res = p.parse(bytes, index);
             var count: u32 = if (res.state) 1 else 0;
             while (res.state and count < max) {
-                res = p.parse(bytes, res.index);
-                if (res.state) {
-                    count += 1;
+                const next = p.parse(bytes, res.next_index);
+                if (!next.state) {
+                    break;
+                }
+                count += 1;
+                res = next;
+            }
+            if (res.state and count >= min and count <= max) {
+                if (res.value) |value| {
+                    return success([2]u32{ index, value[1] }, res.next_index);
                 }
             }
-            if (count < min) {
-                return ParseResult.fail("times is insufficient or failed", res.index, res.overflow);
-            }
-            if (count >= min and count <= max) {
-                return ParseResult.success(res.value, res.index);
-            }
-            return res;
+            return fail("invalid Times", index, index);
         }
     };
 }
@@ -176,24 +237,31 @@ test "test isDigit" {
 
 test "test digit" {
     var res = Digit.parse("1234", 0);
+    debug.print("{}\n", .{res});
     try testing.expect(res.state);
+    if (res.value) |value| {
+        const expect = [_]u32{ 0, 1 };
+        try testing.expect(std.mem.eql(u32, value[0..2], expect[0..2]));
+    }
     res = Digit.parse("abcd", 0);
     try testing.expect(!res.state);
+    try testing.expect(res.value == null);
 }
 
 test "test andThen" {
     const twoDigit = AndThen(Digit, Digit);
     const p = AndThen(twoDigit, Letter);
     var res = p.parse("1234", 0);
+    debug.print("{}\n", .{res});
     try testing.expect(!res.state);
-    try testing.expect(res.index == 2);
+    try testing.expect(res.next_index == 0);
     res = p.parse("12a4", 0);
     try testing.expect(res.state);
-    try testing.expect(res.index == 3);
+    try testing.expect(res.next_index == 3);
     const p2 = AndThen(p, Digit);
     res = p2.parse("12a4", 0);
     try testing.expect(res.state);
-    try testing.expect(res.index == 4);
+    try testing.expect(res.next_index == 4);
 }
 
 test "test orElse" {
@@ -202,13 +270,13 @@ test "test orElse" {
     const twoLetterOrTwoDigit = OrElse(twoLetter, twoDigit);
     var res = twoLetterOrTwoDigit.parse("a2333", 0);
     try testing.expect(!res.state);
-    try testing.expect(res.index == 0);
+    try testing.expect(res.next_index == 0);
     res = twoLetterOrTwoDigit.parse("2333a", 0);
     try testing.expect(res.state);
-    try testing.expect(res.index == 2);
+    try testing.expect(res.next_index == 2);
     res = twoLetterOrTwoDigit.parse("aa22", 0);
     try testing.expect(res.state);
-    try testing.expect(res.index == 2);
+    try testing.expect(res.next_index == 2);
 }
 
 test "test many" {
@@ -216,14 +284,14 @@ test "test many" {
     const manyDigit = Many(Digit);
     var res = manyDigit.parse("111aaa", 0);
     try testing.expect(res.state);
-    try testing.expect(res.index == 3);
+    try testing.expect(res.next_index == 3);
     res = manyLetter.parse("111aaa", 0);
     try testing.expect(res.state);
-    try testing.expect(res.index == 0);
+    try testing.expect(res.next_index == 0);
     const p = AndThen(manyDigit, manyLetter);
     res = p.parse("111aaa", 0);
     try testing.expect(res.state);
-    try testing.expect(res.index == 6);
+    try testing.expect(res.next_index == 6);
 }
 
 test "test optional" {
@@ -232,26 +300,42 @@ test "test optional" {
     const p = AndThen(manyDigit, optionalLetter);
     var res = p.parse("1111", 0);
     try testing.expect(res.state);
-    try testing.expect(res.index == 4);
+    try testing.expect(res.next_index == 4);
     res = p.parse("1111a", 0);
     try testing.expect(res.state);
-    try testing.expect(res.index == 5);
+    try testing.expect(res.next_index == 5);
     res = p.parse("aaa111", 0);
+    debug.print("{}\n", .{res});
     try testing.expect(res.state);
-    try testing.expect(res.index == 1);
+    try testing.expect(res.next_index == 1);
 }
 
 test "test times" {
     const threeDigits = try Times(Digit, 3, 3);
     var res = threeDigits.parse("111", 0);
-    std.debug.print("{}", .{res});
+    debug.print("{}", .{res});
     try testing.expect(res.state);
-    try testing.expect(res.index == 3);
+    try testing.expect(res.next_index == 3);
     res = threeDigits.parse("11", 0);
     try testing.expect(!res.state);
-    try testing.expect(res.index == 2);
+    try testing.expect(res.next_index == 0);
     const oneOrTwoDigits = try Times(Digit, 1, 2);
     res = oneOrTwoDigits.parse("1111", 0);
     try testing.expect(res.state);
-    try testing.expect(res.index == 2);
+    try testing.expect(res.next_index == 2);
+}
+
+test "test combined andThen" {
+    const DotParser = GenerateCharParser("dot", isDot);
+    const p = AndThen(Letter, (AndThen(Optional(DotParser), Optional(Digit))));
+    var res = p.parse("a2b", 0);
+    debug.print("{} \n", .{res});
+    try testing.expect(res.state);
+    res = p.parse("ab.2", 0);
+    debug.print("{} \n", .{res});
+    try testing.expect(res.state);
+    if (res.value) |value| {
+        try testing.expect(value[0] == 0);
+        try testing.expect(value[1] == 1);
+    }
 }

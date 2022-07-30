@@ -27,7 +27,7 @@ pub fn build(b: *std.build.Builder) void {
     example_emmet.install();
 
     const emmet_tests = b.addTest("example/emmet.zig");
-    emmet_tests.addPackagePath("parser-combinator", "src/main.zig");
+    emmet_tests.addPackagePath("../src/main.zig", "src/main.zig");
     const emmet_test_step = b.step("test-emmet", "Run emmet tests");
     emmet_test_step.dependOn(&emmet_tests.step);
 
