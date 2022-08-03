@@ -5,46 +5,23 @@ const ArrayList = std.ArrayList;
 
 const testing = std.testing;
 const debug = std.debug;
+const assert = debug.assert;
+const Parser = @import("parser.zig");
+const character = @import("character.zig");
 
-pub fn isAlpha(ch: u8) bool {
-    return switch (ch) {
-        'a'...'z' => true,
-        'A'...'Z' => true,
-        else => false,
-    };
-}
-
-pub fn isDigit(ch: u8) bool {
-    return switch (ch) {
-        '0'...'9' => true,
-        else => false,
-    };
-}
-
-pub fn isDot(byte: u8) bool {
-    return byte == '.';
-}
-
-pub fn isGreater(byte: u8) bool {
-    return byte == '>';
-}
-
-pub fn isAsterisk(byte: u8) bool {
-    return byte == '*';
-}
-
-pub fn isSharp(byte: u8) bool {
-    return byte == '#';
-}
-
-const ResultKind = enum { Success, Failure };
+// current matched values
+// const head = res.value[0]
+// const list = res.value[1..]
+pub const ParseValue = union(enum) {
+    Leaf: [2]u8,
+    Level: ArrayList(*ParseValue),
+};
 
 pub const ParseError = error{InvalidArg};
 
 pub const ParseResult = struct {
     state: bool,
-    // current matched values [start, end)
-    value: ?[2]u32,
+    value: ?ParseValue,
     // info
     desc: ?[]const u8,
     // index failed to parse
@@ -53,7 +30,7 @@ pub const ParseResult = struct {
     next_index: u32,
 };
 
-pub fn success(value: ?[2]u32, next: u32) ParseResult {
+pub fn success(value: ?ParseValue, next: u32) ParseResult {
     return ParseResult{ .state = true, .value = value, .next_index = next, .desc = null, .index = null };
 }
 
@@ -80,7 +57,7 @@ pub fn GenerateCharParser(
                 return fail("empty string", index, index);
             }
             if (index < bytes.len and parseFn(bytes[index])) {
-                return success([2]u32{ index, index + 1 }, index + 1);
+                return success(ParseValue{ .Leaf = [2]u32{ index, index + 1 } }, index + 1);
             }
             return fail(desc, index, index);
         }
@@ -95,10 +72,10 @@ pub fn Optional(comptime parser: type) type {
             const res = parser.parse(bytes, index);
             if (res.state) {
                 if (res.value) |value| {
-                    return success([2]u32{ index, value[1] }, res.next_index);
+                    return success(value, res.next_index);
                 }
             }
-            return success([2]u32{ index, index }, index);
+            return success(ParseValue{ .Leaf = [2]u32{ index, index } }, index);
         }
     };
 }
@@ -204,36 +181,9 @@ pub fn Times(comptime p: type, min: u32, max: u32) ParseError!type {
     };
 }
 
-pub const Digit = GenerateCharParser("digit", isDigit);
-pub const Letter = GenerateCharParser("string", isAlpha);
+pub const Digit = GenerateCharParser("digit", character.isDigit);
+pub const Letter = GenerateCharParser("string", character.isAlpha);
 
-test "test isAlpha" {
-    var ch: u8 = 'a';
-    while (ch < 'z' + 1) {
-        try testing.expect(isAlpha(ch));
-        ch += 1;
-    }
-    ch = 'A';
-    while (ch < 'Z' + 1) {
-        try testing.expect(isAlpha(ch));
-        ch += 1;
-    }
-    try testing.expect(!isAlpha('0'));
-    try testing.expect(!isAlpha('1'));
-}
-
-test "test isDigit" {
-    var ch: u8 = '0';
-    while (ch < '9' + 1) {
-        try testing.expect(isDigit(ch));
-        ch += 1;
-    }
-    ch = 'A';
-    while (ch < 'Z' + 1) {
-        try testing.expect(!isDigit(ch));
-        ch += 1;
-    }
-}
 
 test "test digit" {
     var res = Digit.parse("1234", 0);

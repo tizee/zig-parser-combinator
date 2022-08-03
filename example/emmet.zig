@@ -2,7 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
-const combinator = @import("../src/main.zig");
+const combinator = @import("../src/main.zig").combinator;
 const ParseResult = combinator.ParseResult;
 
 fn isDot(byte: u8) bool {
