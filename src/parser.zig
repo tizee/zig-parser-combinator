@@ -36,13 +36,23 @@ pub fn Parser(comptime P: type) type {
         }
 
         // return a andThen parser
-        pub fn andThen(G: type) AndThen(P, G) {
+        pub fn andThen(G: type) type {
             return AndThen(P, G);
         }
 
         // return a Map parser
         pub fn map(transformFn: anytype) type {
             return Map(P, transformFn);
+        }
+
+        // return a Map parser
+        pub fn andParser(P2: type) type {
+            return And(P, P2);
+        }
+
+        // return a Map parser
+        pub fn orParser(P2: type) type {
+            return Or(P, P2);
         }
     };
 }

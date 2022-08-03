@@ -1,9 +1,9 @@
 ## TODO
 
 - IParser
-  - [ ] andThen
-  - [ ] many
+  - [x] andThen
+  - [x] many
   - [ ] manyOne
-  - [ ] map
+  - [x] map
   - [ ] optional
-  - [ ] orElse
+  - [x] orElse
