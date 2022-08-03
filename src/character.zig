@@ -56,6 +56,10 @@ pub fn SatisfyParser(predictFn: PredictFn) type {
         pub const OutputType = u8;
         pub const ResultType = Result(InputType, OutputType);
 
+        pub fn deinit(self: *Self) void {
+            _ = self;
+        }
+
         pub fn init(allocator: ?Allocator) Self {
             _ = allocator;
             return Self{};
@@ -177,7 +181,7 @@ test "test Digit with Many" {
 test "test Digit with ManyOne" {
     const word: []const u8 = "0123456789";
     const allocator = testing.allocator;
-    var parser = ParserUtils.Many(Digit).init(allocator);
+    var parser = ParserUtils.ManyOne(Digit).init(allocator);
     errdefer parser.deinit();
     defer parser.deinit();
     var res = try parser.parse(word);
@@ -188,4 +192,15 @@ test "test Digit with ManyOne" {
     res = try parser.parse(word2);
     try testing.expectEqual(res.output.items.len, 4);
     try testing.expect(std.mem.eql(u8, res.output.items, word2));
+}
+
+test "test Alpha,Digit with Optional" {
+    const word: []const u8 = "12345a";
+    const allocator = testing.allocator;
+    var parser = ParserUtils.Optional(ParserUtils.ManyOne(Digit)).init(allocator);
+    errdefer parser.deinit();
+    defer parser.deinit();
+    var res = try parser.parse(word);
+    try testing.expectEqual(res.output.?.items.len, 5);
+    try testing.expect(std.mem.eql(u8, res.output.?.items, "12345"));
 }

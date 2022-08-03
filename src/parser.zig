@@ -57,8 +57,45 @@ pub fn Parser(comptime P: type) type {
     };
 }
 
+// omit the first parser's output
+pub fn RightOnly(comptime P1: type, comptime P2: type) type {
+    return Parser(RightOnlyParser(P1, P2));
+}
+
+fn RightOnlyParser(comptime P1: type, comptime P2: type) type {
+    comptime {
+        meta.assertSameType("RightOnlyParser P1 InputType should be the same as the InputType of P2", P1.InputType, P2.InputType);
+    }
+    return struct {
+        const Self = @This();
+        pub const InputType = P1.InputType;
+        pub const OutputType = P2.OutputType;
+        pub const ResultType = Result(InputType, OutputType);
+
+        f: P1,
+        g: P2,
+
+        pub fn deinit(self: *Self) void {
+            self.f.deinit();
+            self.g.deinit();
+        }
+
+        pub fn init(allocator: ?Allocator) Self {
+            return Self{
+                .f = P1.init(allocator),
+                .g = P2.init(allocator),
+            };
+        }
+
+        pub fn parse(self: *Self, input: InputType) ParseError!ResultType {
+            var res = try self.f.parse(input);
+            var res2 = try self.g.parse(res.input);
+            return ResultType{ .input = res2.input, .output = res2.output };
+        }
+    };
+}
+
 // Generic AndThen Interface
-// AndThen is a parser
 pub fn AndThen(comptime P1: type, comptime P2: type) type {
     return Parser(AndThenParser(P1, P2));
 }
@@ -75,6 +112,11 @@ fn AndThenParser(comptime P1: type, comptime P2: type) type {
 
         f: P1,
         g: P2,
+
+        pub fn deinit(self: *Self) void {
+            self.f.deinit();
+            self.g.deinit();
+        }
 
         pub fn init(allocator: ?Allocator) Self {
             return Self{
@@ -106,6 +148,10 @@ fn MapParser(comptime P: type, transformFn: anytype) type {
         pub const ResultType = Result(InputType, OutputType);
 
         inner: P,
+
+        pub fn deinit(self: *Self) void {
+            self.inner.deinit();
+        }
 
         pub fn init(allocator: ?Allocator) Self {
             return Self{ .inner = P.init(allocator) };
@@ -140,6 +186,11 @@ fn OrParser(comptime P1: type, P2: type) type {
             return Self{ .f = P1.init(allocator), .g = P2.init(allocator) };
         }
 
+        pub fn deinit(self: *Self) void {
+            self.f.deinit();
+            self.g.deinit();
+        }
+
         pub fn parse(self: *Self, input: InputType) ParseError!ResultType {
             var res: ?ResultType = self.f.parse(input) catch null;
             if (res == null) {
@@ -167,6 +218,11 @@ fn AndParser(comptime P1: type, P2: type) type {
 
         f: P1,
         g: P2,
+
+        pub fn deinit(self: *Self) void {
+            self.f.deinit();
+            self.g.deinit();
+        }
 
         pub fn init(allocator: ?Allocator) Self {
             return Self{ .f = P1.init(allocator), .g = P2.init(allocator) };
@@ -235,6 +291,108 @@ fn ManyParser(comptime P: type) type {
             return ResultType{
                 .input = i,
                 .output = list,
+            };
+        }
+    };
+}
+
+pub fn ManyOne(comptime P: type) type {
+    return Parser(ManyOneParser(P));
+}
+
+fn ManyOneParser(comptime P: type) type {
+    return struct {
+        const Self = @This();
+        pub const InputType = P.InputType;
+        pub const OutputType = *ArrayList(P.OutputType);
+        const InnerResultType = P.ResultType;
+        pub const ResultType = Result(InputType, OutputType);
+
+        inner: P,
+        allocator: Allocator,
+        result: ArrayList(P.OutputType),
+
+        pub fn init(allocator: ?Allocator) Self {
+            return Self{ .inner = P.init(allocator), .allocator = allocator.?, .result = ArrayList(P.OutputType).init(allocator.?) };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.result.deinit();
+        }
+
+        fn clear(self: *Self) void {
+            while (self.result.popOrNull()) |_| {}
+        }
+
+        pub fn parse(self: *Self, input: InputType) ParseError!ResultType {
+            self.clear();
+            var list: *ArrayList(P.OutputType) = &self.result;
+            var i = input;
+            var i_clone = input;
+            var res: ?InnerResultType = self.inner.parse(i_clone) catch |e|
+                switch (e) {
+                ParseError.NotEnoughInput => {
+                    return ParseError.NotEnoughInput;
+                },
+                else => null,
+            };
+            if (res == null) {
+                return ParseError.InvalidInput;
+            }
+            list.*.append(res.?.output) catch {
+                return ParseError.ArrayListFailure;
+            };
+            i = res.?.input;
+            while (true) {
+                var another = i;
+                res = self.inner.parse(another) catch {
+                    break;
+                };
+                i = res.?.input;
+                list.*.append(res.?.output) catch {
+                    return ParseError.ArrayListFailure;
+                };
+            }
+            return ResultType{
+                .input = i,
+                .output = list,
+            };
+        }
+    };
+}
+
+/// Optional parser return null when failed
+pub fn Optional(comptime P: type) type {
+    return Parser(OptionalParser(P));
+}
+
+fn OptionalParser(comptime P: type) type {
+    return struct {
+        const Self = @This();
+        pub const InputType = P.InputType;
+        pub const OutputType = ?P.OutputType;
+        pub const ResultType = Result(InputType, OutputType);
+
+        inner: P,
+
+        pub fn init(allocator: ?Allocator) Self {
+            return Self{ .inner = P.init(allocator) };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.inner.deinit();
+        }
+
+        pub fn parse(self: *Self, input: InputType) ParseError!ResultType {
+            var res = self.inner.parse(input) catch {
+                return ResultType{
+                    .input = input,
+                    .output = null,
+                };
+            };
+            return ResultType{
+                .input = res.input,
+                .output = res.output,
             };
         }
     };
