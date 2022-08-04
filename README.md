@@ -9,16 +9,11 @@ $ zig version
 
 ## Examples
 
-- json parser
+- A Emmet parser
 
 ```
-make json
-```
-
-- Emmet parser
-
-```
-make emmet
+zig build emmet
+./example/emmet "div.root>ul>list>li.5"
 ```
 
 ## Acknowledgment
