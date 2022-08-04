@@ -343,6 +343,6 @@ pub fn main() anyerror!void {
     var buf: [BUF_CAP]u8 = undefined;
 
     var res = try parseStr(a, input, &buf);
-    std.debug.print("{s}\n", .{input});
-    std.log.info("{s}\n", .{res});
+    const stdout = std.io.getStdOut();
+    _ = try stdout.write(res);
 }

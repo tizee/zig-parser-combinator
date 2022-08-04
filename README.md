@@ -9,7 +9,7 @@ $ zig version
 
 ## Examples
 
-- A Emmet parser
+- An simple Emmet parser
 
 ```
 zig build emmet
