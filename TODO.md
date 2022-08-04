@@ -7,3 +7,8 @@
   - [x] map
   - [x] optional
   - [x] orElse
+
+### Example
+
+- [x] Emmet
+- [ ] Json
