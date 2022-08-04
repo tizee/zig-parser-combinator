@@ -11,4 +11,4 @@
 ### Example
 
 - [x] Emmet
-- [ ] Json
+- [ ] ~~Json~~ (Please use `std.json.tokenStream`)
