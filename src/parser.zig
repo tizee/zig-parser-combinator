@@ -2,7 +2,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const ArrayList = std.ArrayList;
+const TailQueue = std.TailQueue;
 const ArrayHashMap = std.ArrayHashMap;
+const StringArrayHashMap = std.StringArrayHashMap;
 
 const meta = @import("meta.zig");
 const Result = meta.Result;
@@ -11,7 +13,7 @@ const testing = std.testing;
 const debug = std.debug;
 const assert = debug.assert;
 
-pub const ParseError = error{ NotEnoughInput, InvalidInput, ArrayListFailure };
+pub const ParseError = error{ NotEnoughInput, InvalidInput, ArrayListFailure, AllocatorFailure };
 
 // Generic Parser Interface
 pub fn Parser(comptime P: type) type {
@@ -24,7 +26,7 @@ pub fn Parser(comptime P: type) type {
         inner: P,
 
         pub fn parse(self: *Self, input: P.InputType) ParseError!ResultType {
-            return self.inner.parse(input);
+            return try self.inner.parse(input);
         }
 
         pub fn init(allocator: ?Allocator) Self {
@@ -148,18 +150,31 @@ fn MapParser(comptime P: type, transformFn: anytype) type {
         pub const ResultType = Result(InputType, OutputType);
 
         inner: P,
+        allocator: Allocator,
 
         pub fn deinit(self: *Self) void {
             self.inner.deinit();
         }
 
         pub fn init(allocator: ?Allocator) Self {
-            return Self{ .inner = P.init(allocator) };
+            return Self{
+                .inner = P.init(allocator),
+                .allocator = allocator.?,
+            };
         }
 
         pub fn parse(self: *Self, input: InputType) ParseError!ResultType {
-            var res = try self.inner.parse(input);
-            return ResultType{ .input = res.input, .output = transformFn(res.output) };
+            const res = try self.inner.parse(input);
+            const output = transformFn(self.allocator, res.output);
+            switch (@typeInfo(P.OutputType)) {
+                .Struct => {
+                    if (@hasDecl(P.OutputType, "deinit")) {
+                        defer res.output.deinit();
+                    }
+                },
+                else => {},
+            }
+            return ResultType{ .input = res.input, .output = output };
         }
     };
 }
@@ -247,46 +262,53 @@ fn ManyParser(comptime P: type) type {
     return struct {
         const Self = @This();
         pub const InputType = P.InputType;
-        pub const OutputType = *ArrayList(P.OutputType);
+        // pub const OutputType = *ArrayList(P.OutputType);
+        pub const OutputType = ArrayList(P.OutputType);
         const InnerResultType = P.ResultType;
         pub const ResultType = Result(InputType, OutputType);
 
         inner: P,
         allocator: Allocator,
-        result: ArrayList(P.OutputType),
+        // result: StringArrayHashMap(OutputType),
 
         pub fn init(allocator: ?Allocator) Self {
-            return Self{ .inner = P.init(allocator), .allocator = allocator.?, .result = ArrayList(P.OutputType).init(allocator.?) };
+            // return Self{ .inner = P.init(allocator), .allocator = allocator.?, .result = StringArrayHashMap(OutputType).init(allocator.?) };
+            return Self{
+                .inner = P.init(allocator),
+                .allocator = allocator.?,
+            };
         }
 
         pub fn deinit(self: *Self) void {
-            self.result.deinit();
-        }
-
-        fn clear(self: *Self) void {
-            while (self.result.popOrNull()) |_| {}
+            _ = self;
+            // self.result.deinit();
         }
 
         pub fn parse(self: *Self, input: InputType) ParseError!ResultType {
-            self.clear();
-            var list: *ArrayList(P.OutputType) = &self.result;
+            var list: ArrayList(P.OutputType) = ArrayList(P.OutputType).init(self.allocator);
+            // var list: *ArrayList(P.OutputType) = undefined;
+            // if (self.result.get(input) == null) {
+            //     self.result.put(input, &ArrayList(P.OutputType).init(self.allocator)) catch {
+            //         return ParseError.AllocatorFailure;
+            //     };
+            // }
+            // list = self.result.get(input).?;
+
             var i = input;
             while (true) {
-                var another = i;
-                var res: ?InnerResultType = self.inner.parse(another) catch |e|
+                var res = self.inner.parse(i) catch |e|
                     switch (e) {
                     ParseError.NotEnoughInput => {
                         break;
                     },
-                    else => null,
+                    else => {
+                        return ParseError.InvalidInput;
+                    },
                 };
-                if (res == null) {
-                    return ParseError.InvalidInput;
-                }
-                i = res.?.input;
-                list.*.append(res.?.output) catch {
+                list.append(res.output) catch {
                     return ParseError.ArrayListFailure;
                 };
+                i = res.input;
             }
             return ResultType{
                 .input = i,
@@ -304,52 +326,56 @@ fn ManyOneParser(comptime P: type) type {
     return struct {
         const Self = @This();
         pub const InputType = P.InputType;
-        pub const OutputType = *ArrayList(P.OutputType);
+        // pub const OutputType = *ArrayList(P.OutputType);
+        pub const OutputType = ArrayList(P.OutputType);
         const InnerResultType = P.ResultType;
         pub const ResultType = Result(InputType, OutputType);
 
         inner: P,
         allocator: Allocator,
-        result: ArrayList(P.OutputType),
+        // result: StringArrayHashMap(OutputType),
 
         pub fn init(allocator: ?Allocator) Self {
-            return Self{ .inner = P.init(allocator), .allocator = allocator.?, .result = ArrayList(P.OutputType).init(allocator.?) };
+            // return Self{ .inner = P.init(allocator), .allocator = allocator.?, .result = StringArrayHashMap(OutputType).init(allocator.?) };
+            return Self{
+                .inner = P.init(allocator),
+                .allocator = allocator.?,
+            };
         }
 
         pub fn deinit(self: *Self) void {
-            self.result.deinit();
-        }
-
-        fn clear(self: *Self) void {
-            while (self.result.popOrNull()) |_| {}
+            _ = self;
+            // self.result.deinit();
         }
 
         pub fn parse(self: *Self, input: InputType) ParseError!ResultType {
-            self.clear();
-            var list: *ArrayList(P.OutputType) = &self.result;
+            var list: ArrayList(P.OutputType) = ArrayList(P.OutputType).init(self.allocator);
+            // var list: *ArrayList(P.OutputType) = undefined;
+            // if (self.result.get(input) == null) {
+            //     self.result.put(input, &ArrayList(P.OutputType).init(self.allocator)) catch {
+            //         return ParseError.AllocatorFailure;
+            //     };
+            // }
+            // list = self.result.get(input).?;
+
             var i = input;
-            var i_clone = input;
-            var res: ?InnerResultType = self.inner.parse(i_clone) catch |e|
-                switch (e) {
-                ParseError.NotEnoughInput => {
-                    return ParseError.NotEnoughInput;
-                },
-                else => null,
-            };
-            if (res == null) {
-                return ParseError.InvalidInput;
-            }
-            list.*.append(res.?.output) catch {
+            var res = try self.inner.parse(i);
+            // list.*.append(res.output) catch {
+            //     return ParseError.ArrayListFailure;
+            // };
+            list.append(res.output) catch {
                 return ParseError.ArrayListFailure;
             };
-            i = res.?.input;
+            i = res.input;
             while (true) {
-                var another = i;
-                res = self.inner.parse(another) catch {
+                res = self.inner.parse(i) catch {
                     break;
                 };
-                i = res.?.input;
-                list.*.append(res.?.output) catch {
+                i = res.input;
+                // list.*.append(res.output) catch {
+                //     return ParseError.ArrayListFailure;
+                // };
+                list.append(res.output) catch {
                     return ParseError.ArrayListFailure;
                 };
             }

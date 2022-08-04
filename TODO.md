@@ -3,7 +3,7 @@
 - IParser
   - [x] andThen
   - [x] many
-  - [ ] manyOne
+  - [x] manyOne
   - [x] map
-  - [ ] optional
+  - [x] optional
   - [x] orElse
